@@ -270,11 +270,11 @@ class AutoInputApp:
         # ── Controls ──────────────────────────────────────────────────────
         ttk.Label(main, text="CONTROLS", style="Section.TLabel").pack(anchor="w", pady=(0, 6))
 
-        ctrl_frame = tk.Frame(main, bg=BG)
-        ctrl_frame.pack(fill="x", pady=(0, 6))
+        ctrl_row1 = tk.Frame(main, bg=BG)
+        ctrl_row1.pack(fill="x", pady=(0, 8))
 
         # Delay
-        delay_f = tk.Frame(ctrl_frame, bg=BG)
+        delay_f = tk.Frame(ctrl_row1, bg=BG)
         delay_f.pack(side="left", padx=(0, 16))
         tk.Label(delay_f, text="START DELAY (s)", bg=BG, fg=TEXT_DIM, font=("Consolas", 8, "bold")).pack(anchor="w")
         self.delay_var = tk.StringVar(value="3")
@@ -284,8 +284,22 @@ class AutoInputApp:
             insertbackground=ACCENT, highlightbackground=BORDER, highlightthickness=1,
         ).pack()
 
+        # Start key
+        start_k = tk.Frame(ctrl_row1, bg=BG)
+        start_k.pack(side="left", padx=(0, 16))
+        tk.Label(start_k, text="START KEY", bg=BG, fg=TEXT_DIM, font=("Consolas", 8, "bold")).pack(anchor="w")
+        self.start_key_btn = tk.Button(
+            start_k, text="F6", bg=SURFACE2, fg=ACCENT,
+            font=("Consolas", 10), bd=0, relief="flat", width=12, pady=4,
+            highlightbackground=BORDER, highlightthickness=1,
+            activebackground=SURFACE2, activeforeground=ACCENT,
+        )
+        self.start_key_btn.pack()
+        self.start_key_btn.bind("<Button-1>", self._start_start_key_capture)
+        self._start_key = None  # pynput Key object, set by _start_global_hotkey
+
         # Stop key
-        stop_f = tk.Frame(ctrl_frame, bg=BG)
+        stop_f = tk.Frame(ctrl_row1, bg=BG)
         stop_f.pack(side="left", padx=(0, 16))
         tk.Label(stop_f, text="STOP KEY", bg=BG, fg=TEXT_DIM, font=("Consolas", 8, "bold")).pack(anchor="w")
         self.stop_key_btn = tk.Button(
@@ -298,25 +312,32 @@ class AutoInputApp:
         self.stop_key_btn.bind("<Button-1>", self._start_stop_key_capture)
         self._stop_key = None  # pynput Key object, set by _start_global_hotkey
 
+        ctrl_row2 = tk.Frame(main, bg=BG)
+        ctrl_row2.pack(fill="x", pady=(0, 6))
+
         # Repeat
         self.repeat_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
-            ctrl_frame, text="Loop queue", variable=self.repeat_var,
+            ctrl_row2, text="Loop queue", variable=self.repeat_var,
             bg=BG, fg=TEXT, selectcolor=SURFACE2,
             activebackground=BG, activeforeground=ACCENT,
             font=("Segoe UI", 10),
         ).pack(side="left", padx=(0, 16))
 
         # Humanize
+        humanize_f = tk.Frame(ctrl_row2, bg=BG)
+        humanize_f.pack(side="left", padx=(0, 8))
         self.humanize_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            ctrl_frame, text="Humanize", variable=self.humanize_var,
+            humanize_f, text="Humanize", variable=self.humanize_var,
             bg=BG, fg=TEXT, selectcolor=SURFACE2,
             activebackground=BG, activeforeground=ACCENT,
             font=("Segoe UI", 10),
-        ).pack(side="left", padx=(0, 8))
+        ).pack(anchor="w")
+        tk.Label(humanize_f, text="Adds random timing variation to look human",
+                 bg=BG, fg=TEXT_DIM, font=("Consolas", 7)).pack(anchor="w")
 
-        variance_f = tk.Frame(ctrl_frame, bg=BG)
+        variance_f = tk.Frame(ctrl_row2, bg=BG)
         variance_f.pack(side="left", padx=(0, 16))
         tk.Label(variance_f, text="VARIANCE %", bg=BG, fg=TEXT_DIM, font=("Consolas", 8, "bold")).pack(anchor="w")
         self.variance_var = tk.StringVar(value="20")
@@ -325,6 +346,8 @@ class AutoInputApp:
             font=("Consolas", 11), bd=0, width=5,
             insertbackground=ACCENT, highlightbackground=BORDER, highlightthickness=1,
         ).pack()
+        tk.Label(variance_f, text="e.g. 20% = timings vary +/-20%",
+                 bg=BG, fg=TEXT_DIM, font=("Consolas", 7)).pack(anchor="w")
 
         # Start / Stop
         btn_frame = tk.Frame(main, bg=BG)
@@ -368,7 +391,7 @@ class AutoInputApp:
         self.status_counter.pack(side="right", padx=10, pady=10)
 
         # Hotkey hint
-        self.hotkey_hint = tk.Label(main, text="Tip: Press Escape at any time to emergency-stop",
+        self.hotkey_hint = tk.Label(main, text="F6 = Start  |  Escape = Stop  (works while alt-tabbed)",
                  bg=BG, fg=TEXT_DIM, font=("Consolas", 8))
         self.hotkey_hint.pack(pady=(8, 0))
 
@@ -385,26 +408,22 @@ class AutoInputApp:
         from pynput.keyboard import Listener, Key
 
         self._stop_key = Key.esc
+        self._start_key = Key.f6
 
         def on_press(key):
             if key == self._stop_key:
                 self.root.after(0, self._stop)
+            elif key == self._start_key:
+                self.root.after(0, self._start)
 
         self._hotkey_listener = Listener(on_press=on_press)
         self._hotkey_listener.daemon = True
         self._hotkey_listener.start()
 
-    def _start_stop_key_capture(self, event):
-        self.stop_key_btn.configure(text="Listening...", fg=WARNING)
-        self.root.bind("<KeyPress>", self._on_stop_key_captured)
+    def _keysym_to_pynput(self, keysym):
+        """Convert a tkinter keysym to a pynput Key/KeyCode."""
+        from pynput.keyboard import Key, KeyCode
 
-    def _on_stop_key_captured(self, event):
-        from pynput.keyboard import Key
-
-        self.root.unbind("<KeyPress>")
-        keysym = event.keysym
-
-        # Map tkinter keysym to pynput Key
         mapping = {
             "Escape": Key.esc, "space": Key.space,
             "Return": Key.enter, "Tab": Key.tab, "BackSpace": Key.backspace,
@@ -421,21 +440,41 @@ class AutoInputApp:
             mapping[f"F{i}"] = getattr(Key, f"f{i}")
 
         if keysym in mapping:
-            self._stop_key = mapping[keysym]
+            return mapping[keysym]
         elif len(keysym) == 1:
-            from pynput.keyboard import KeyCode
-            self._stop_key = KeyCode.from_char(keysym.lower())
+            return KeyCode.from_char(keysym.lower())
         else:
-            # Try pynput Key attribute as fallback
             try:
-                self._stop_key = getattr(Key, keysym.lower())
+                return getattr(Key, keysym.lower())
             except AttributeError:
-                from pynput.keyboard import KeyCode
-                self._stop_key = KeyCode.from_char(keysym.lower())
+                return KeyCode.from_char(keysym.lower())
 
-        display = keysym.upper() if len(keysym) == 1 else keysym
+    def _update_hotkey_hint(self):
+        start_name = self.start_key_btn.cget("text")
+        stop_name = self.stop_key_btn.cget("text")
+        self.hotkey_hint.configure(text=f"{start_name} = Start  |  {stop_name} = Stop  (works while alt-tabbed)")
+
+    def _start_start_key_capture(self, event):
+        self.start_key_btn.configure(text="Listening...", fg=WARNING)
+        self.root.bind("<KeyPress>", self._on_start_key_captured)
+
+    def _on_start_key_captured(self, event):
+        self.root.unbind("<KeyPress>")
+        self._start_key = self._keysym_to_pynput(event.keysym)
+        display = event.keysym.upper() if len(event.keysym) == 1 else event.keysym
+        self.start_key_btn.configure(text=display, fg=ACCENT)
+        self._update_hotkey_hint()
+
+    def _start_stop_key_capture(self, event):
+        self.stop_key_btn.configure(text="Listening...", fg=WARNING)
+        self.root.bind("<KeyPress>", self._on_stop_key_captured)
+
+    def _on_stop_key_captured(self, event):
+        self.root.unbind("<KeyPress>")
+        self._stop_key = self._keysym_to_pynput(event.keysym)
+        display = event.keysym.upper() if len(event.keysym) == 1 else event.keysym
         self.stop_key_btn.configure(text=display, fg=DANGER)
-        self.hotkey_hint.configure(text=f"Tip: Press {display} at any time to emergency-stop")
+        self._update_hotkey_hint()
 
     # ── Type change visibility ────────────────────────────────────────────
 
