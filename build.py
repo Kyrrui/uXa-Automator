@@ -78,6 +78,8 @@ def build():
         "--windowed",
         f"--name={NAME}",
         f"--add-data={ICON_PNG}{os.pathsep}.",
+        "--hidden-import=PIL",
+        "--hidden-import=PIL._tkinter_finder",
     ]
 
     if icon_flag:

@@ -16,6 +16,7 @@ import uuid
 import json
 import os
 import sys
+import random
 
 
 # ─── Theme ────────────────────────────────────────────────────────────────────
@@ -305,6 +306,25 @@ class AutoInputApp:
             activebackground=BG, activeforeground=ACCENT,
             font=("Segoe UI", 10),
         ).pack(side="left", padx=(0, 16))
+
+        # Humanize
+        self.humanize_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            ctrl_frame, text="Humanize", variable=self.humanize_var,
+            bg=BG, fg=TEXT, selectcolor=SURFACE2,
+            activebackground=BG, activeforeground=ACCENT,
+            font=("Segoe UI", 10),
+        ).pack(side="left", padx=(0, 8))
+
+        variance_f = tk.Frame(ctrl_frame, bg=BG)
+        variance_f.pack(side="left", padx=(0, 16))
+        tk.Label(variance_f, text="VARIANCE %", bg=BG, fg=TEXT_DIM, font=("Consolas", 8, "bold")).pack(anchor="w")
+        self.variance_var = tk.StringVar(value="20")
+        tk.Entry(
+            variance_f, textvariable=self.variance_var, bg=SURFACE2, fg=TEXT,
+            font=("Consolas", 11), bd=0, width=5,
+            insertbackground=ACCENT, highlightbackground=BORDER, highlightthickness=1,
+        ).pack()
 
         # Start / Stop
         btn_frame = tk.Frame(main, bg=BG)
@@ -741,6 +761,19 @@ class AutoInputApp:
                 self.root.after(0, lambda r=remaining: self._set_status(f"Starting in {r:.1f}s", WARNING, WARNING))
                 time.sleep(0.1)
 
+        humanize = self.humanize_var.get()
+        try:
+            variance_pct = float(self.variance_var.get() or 20) / 100.0
+        except ValueError:
+            variance_pct = 0.2
+
+        def jitter(value):
+            """Apply random variance to a timing value if humanize is on."""
+            if not humanize:
+                return value
+            offset = value * variance_pct
+            return max(0.001, value + random.uniform(-offset, offset))
+
         def run_action(action):
             """Execute a single action (runs in its own thread for concurrency)."""
             t = action["type"]
@@ -749,31 +782,31 @@ class AutoInputApp:
             if t == "key_hold":
                 key = resolve_key(action["key"])
                 kb.press(key)
-                self._interruptible_sleep(dur)
+                self._interruptible_sleep(jitter(dur))
                 kb.release(key)
 
             elif t == "key_press":
                 key = resolve_key(action["key"])
                 interval_s = action["interval"] / 1000.0
-                end_time = time.time() + dur
+                end_time = time.time() + jitter(dur)
                 while time.time() < end_time and not self.stop_event.is_set():
                     kb.press(key)
                     kb.release(key)
-                    self._interruptible_sleep(interval_s)
+                    self._interruptible_sleep(jitter(interval_s))
 
             elif t == "mouse_hold":
                 btn = button_map[action["button"]]
                 mouse.press(btn)
-                self._interruptible_sleep(dur)
+                self._interruptible_sleep(jitter(dur))
                 mouse.release(btn)
 
             elif t == "mouse_click":
                 btn = button_map[action["button"]]
                 interval_s = action["interval"] / 1000.0
-                end_time = time.time() + dur
+                end_time = time.time() + jitter(dur)
                 while time.time() < end_time and not self.stop_event.is_set():
                     mouse.click(btn)
-                    self._interruptible_sleep(interval_s)
+                    self._interruptible_sleep(jitter(interval_s))
 
         loop_count = 0
         while not self.stop_event.is_set():
@@ -787,7 +820,7 @@ class AutoInputApp:
                         self._set_status(f"[Step {idx+1}/{len(self.queue)}] Pause for {dur}s", ACCENT, ACCENT),
                         self.status_counter.configure(text=f"Loop {loop_count}")
                     ))
-                    self._interruptible_sleep(step["duration"])
+                    self._interruptible_sleep(jitter(step["duration"]))
 
                 elif step["type"] == "group":
                     descs = ", ".join(self._describe_action(a) for a in step["actions"])
