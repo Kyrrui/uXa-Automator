@@ -257,6 +257,19 @@ class AutoInputApp:
         self.queue_canvas.pack(side="left", fill="both", expand=True)
         self.queue_scrollbar.pack(side="right", fill="y")
 
+        # Enable mousewheel scrolling on the queue
+        def _on_queue_mousewheel(event):
+            self.queue_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bind_mousewheel(event):
+            self.queue_canvas.bind_all("<MouseWheel>", _on_queue_mousewheel)
+
+        def _unbind_mousewheel(event):
+            self.queue_canvas.unbind_all("<MouseWheel>")
+
+        queue_outer.bind("<Enter>", _bind_mousewheel)
+        queue_outer.bind("<Leave>", _unbind_mousewheel)
+
         self.empty_label = tk.Label(
             self.queue_list_frame, text="No actions yet — add one above",
             bg=SURFACE, fg=TEXT_DIM, font=("Consolas", 9), pady=60,
@@ -275,6 +288,14 @@ class AutoInputApp:
             command=self._clear_queue,
         )
         self.clear_btn.pack(side="left")
+
+        tk.Button(
+            qbtn_frame, text="Pop Out", bg=SURFACE2, fg=TEXT_DIM,
+            font=("Segoe UI", 9), bd=0, pady=6, padx=16,
+            highlightbackground=BORDER, highlightthickness=1,
+            activebackground=ACCENT_DIM, activeforeground=ACCENT,
+            command=self._popout_queue,
+        ).pack(side="left", padx=(4, 0))
 
         tk.Button(
             qbtn_frame, text="Save", bg=SURFACE2, fg=TEXT_DIM,
@@ -705,6 +726,64 @@ class AutoInputApp:
         self.queue = []
         self.selected_step_id = None
         self._render_queue()
+
+    def _popout_queue(self):
+        """Open the queue in an enlarged pop-out window."""
+        if not self.queue:
+            self._set_status("Queue is empty", WARNING, WARNING)
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("uXa Automator — Queue")
+        win.configure(bg=BG)
+        win.geometry("600x500")
+
+        # Scrollable frame
+        canvas = tk.Canvas(win, bg=SURFACE, highlightthickness=0, bd=0)
+        scrollbar = tk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        content = tk.Frame(canvas, bg=SURFACE)
+
+        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=content, anchor="nw", tags="frame")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig("frame", width=e.width))
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Mousewheel
+        def _mw(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        win.bind("<MouseWheel>", _mw)
+
+        # Render steps
+        for i, step in enumerate(self.queue):
+            selected = step["id"] == self.selected_step_id
+            bg = ACCENT_DIM if selected else (SURFACE2 if i % 2 == 0 else SURFACE)
+
+            header = tk.Frame(content, bg=bg)
+            header.pack(fill="x", padx=10, pady=(6, 0))
+
+            tk.Label(header, text=f"Step {i+1}", bg=bg, fg=ACCENT,
+                     font=("Consolas", 11, "bold")).pack(side="left", padx=(10, 8))
+
+            if step["type"] == "pause":
+                tk.Label(header, text=f"Pause for {step['duration']}s", bg=bg, fg=TEXT,
+                         font=("Consolas", 11)).pack(side="left", padx=6, pady=8)
+            else:
+                humanized = step.get("humanize", False)
+                max_dur = max(a["duration"] for a in step["actions"])
+                dur_str = f"~{max_dur}s" if humanized else f"{max_dur}s"
+                hum_label = "  [Humanized]" if humanized else ""
+                count = len(step["actions"])
+                tk.Label(header, text=f"{count} input{'s' if count != 1 else ''} \u00b7 {dur_str} (concurrent){hum_label}",
+                         bg=bg, fg=TEXT_DIM, font=("Consolas", 10)).pack(side="left", padx=6, pady=8)
+
+                for action in step["actions"]:
+                    arow = tk.Frame(content, bg=bg)
+                    arow.pack(fill="x", padx=10)
+                    tk.Label(arow, text=f"    {self._describe_action(action)}", bg=bg, fg=TEXT,
+                             font=("Consolas", 10), anchor="w").pack(side="left", padx=(30, 6), pady=3)
 
     def _save_queue(self):
         if not self.queue:
