@@ -203,6 +203,17 @@ class AutoInputApp:
         )
         int_entry.pack()
 
+        # Count (optional, for press/click modes — overrides duration)
+        self.count_frame = tk.Frame(r2, bg=SURFACE)
+
+        tk.Label(self.count_frame, text="COUNT (optional)", bg=SURFACE, fg=TEXT_DIM, font=("Consolas", 8, "bold")).pack(anchor="w")
+        self.count_var = tk.StringVar(value="")
+        tk.Entry(
+            self.count_frame, textvariable=self.count_var, bg=SURFACE2, fg=TEXT,
+            font=("Consolas", 11), bd=0, relief="flat", width=8,
+            insertbackground=ACCENT, highlightbackground=BORDER, highlightthickness=1,
+        ).pack()
+
         # Add buttons
         add_btns = tk.Frame(add_inner, bg=SURFACE)
         add_btns.pack(fill="x", pady=(4, 0))
@@ -342,30 +353,17 @@ class AutoInputApp:
         tk.Label(repeat_f, text="Repeat queue when finished",
                  bg=BG, fg=TEXT_DIM, font=("Consolas", 7)).pack(anchor="w")
 
-        # Humanize
-        humanize_f = tk.Frame(ctrl_row2, bg=BG)
-        humanize_f.pack(side="left", padx=(0, 16))
-        self.humanize_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            humanize_f, text="Humanize", variable=self.humanize_var,
-            bg=BG, fg=TEXT, selectcolor=SURFACE2,
-            activebackground=BG, activeforeground=ACCENT,
-            font=("Segoe UI", 10),
-        ).pack(anchor="w")
-        tk.Label(humanize_f, text="Random timing to look human",
-                 bg=BG, fg=TEXT_DIM, font=("Consolas", 7)).pack(anchor="w")
-
-        # Variance
+        # Variance (used by per-step humanize)
         variance_f = tk.Frame(ctrl_row2, bg=BG)
         variance_f.pack(side="left", padx=(0, 16))
         tk.Label(variance_f, text="VARIANCE %", bg=BG, fg=TEXT_DIM, font=("Consolas", 8, "bold")).pack(anchor="w")
-        self.variance_var = tk.StringVar(value="20")
+        self.variance_var = tk.StringVar(value="15")
         tk.Entry(
             variance_f, textvariable=self.variance_var, bg=SURFACE2, fg=TEXT,
             font=("Consolas", 11), bd=0, width=5,
             insertbackground=ACCENT, highlightbackground=BORDER, highlightthickness=1,
         ).pack(anchor="w")
-        tk.Label(variance_f, text="Timings vary +/- this %",
+        tk.Label(variance_f, text="For steps set to Humanized",
                  bg=BG, fg=TEXT_DIM, font=("Consolas", 7)).pack(anchor="w")
 
         # Start / Stop
@@ -504,6 +502,7 @@ class AutoInputApp:
         self.mouse_frame.pack_forget()
         self.dur_frame.pack_forget()
         self.interval_frame.pack_forget()
+        self.count_frame.pack_forget()
 
         r2 = self.key_frame.master  # the r2 frame
 
@@ -513,14 +512,16 @@ class AutoInputApp:
         elif t == "key_press":
             self.key_frame.pack(in_=r2, side="left", fill="x", expand=True, padx=(0, 8))
             self.dur_frame.pack(in_=r2, side="left", padx=(0, 8))
-            self.interval_frame.pack(in_=r2, side="left")
+            self.interval_frame.pack(in_=r2, side="left", padx=(0, 8))
+            self.count_frame.pack(in_=r2, side="left")
         elif t == "mouse_hold":
             self.mouse_frame.pack(in_=r2, side="left", fill="x", expand=True, padx=(0, 8))
             self.dur_frame.pack(in_=r2, side="left")
         elif t == "mouse_click":
             self.mouse_frame.pack(in_=r2, side="left", fill="x", expand=True, padx=(0, 8))
             self.dur_frame.pack(in_=r2, side="left", padx=(0, 8))
-            self.interval_frame.pack(in_=r2, side="left")
+            self.interval_frame.pack(in_=r2, side="left", padx=(0, 8))
+            self.count_frame.pack(in_=r2, side="left")
         elif t == "pause":
             self.dur_frame.pack(in_=r2, side="left")
 
@@ -560,6 +561,18 @@ class AutoInputApp:
 
         action = {"id": str(uuid.uuid4())[:8], "type": t, "duration": dur}
 
+        # Parse optional count
+        count_str = self.count_var.get().strip()
+        count = None
+        if count_str:
+            try:
+                count = int(float(count_str))
+                if count < 1:
+                    count = None
+            except ValueError:
+                self._set_status("Invalid count", DANGER, DANGER)
+                return None
+
         if t in ("key_hold", "key_press"):
             if not self.captured_key:
                 self.key_capture_btn.configure(text="⚠ Set a key first!", fg=DANGER)
@@ -568,10 +581,14 @@ class AutoInputApp:
             action["key_display"] = self.key_capture_btn.cget("text")
             if t == "key_press":
                 action["interval"] = interval
+                if count is not None:
+                    action["count"] = count
         elif t in ("mouse_hold", "mouse_click"):
             action["button"] = self.mouse_btn_var.get()
             if t == "mouse_click":
                 action["interval"] = interval
+                if count is not None:
+                    action["count"] = count
 
         return action
 
@@ -588,6 +605,7 @@ class AutoInputApp:
                 "id": str(uuid.uuid4())[:8],
                 "type": "group",
                 "actions": [action],
+                "humanize": False,
             }
             self.queue.append(step)
             self.selected_step_id = step["id"]
@@ -634,6 +652,13 @@ class AutoInputApp:
         else:
             self.collapsed_steps.add(step_id)
         self._render_queue()
+
+    def _toggle_humanize(self, step_id):
+        """Toggle per-step humanize."""
+        step = next((s for s in self.queue if s["id"] == step_id), None)
+        if step and step["type"] == "group":
+            step["humanize"] = not step.get("humanize", False)
+            self._render_queue()
 
     def _update_add_to_step_btn(self):
         """Enable/disable the Add to Step button based on selection."""
@@ -770,10 +795,18 @@ class AutoInputApp:
 
                 action_count = len(step["actions"])
                 max_dur = max(a["duration"] for a in step["actions"])
-                sel_hint = " ← selected" if selected else ""
-                desc_label = tk.Label(header, text=f"{action_count} input{'s' if action_count != 1 else ''} \u00b7 {max_dur}s (concurrent){sel_hint}",
+                humanized = step.get("humanize", False)
+                dur_str = f"~{max_dur}s" if humanized else f"{max_dur}s"
+                desc_label = tk.Label(header, text=f"{action_count} input{'s' if action_count != 1 else ''} \u00b7 {dur_str} (concurrent)",
                          bg=bg, fg=TEXT_DIM, font=("Consolas", 8), anchor="w", cursor="hand2")
                 desc_label.pack(side="left", fill="x", expand=True, padx=6, pady=4)
+                hum_text = "Humanized" if humanized else "Exact"
+                hum_fg = ACCENT if humanized else TEXT_DIM
+                hum_bg = ACCENT_DIM if humanized else bg
+                tk.Button(header, text=hum_text, bg=hum_bg, fg=hum_fg,
+                          font=("Consolas", 7, "bold"), bd=0, padx=6, pady=2, cursor="hand2",
+                          highlightbackground=ACCENT if humanized else BORDER, highlightthickness=1,
+                          command=lambda sid=step["id"]: self._toggle_humanize(sid)).pack(side="left", padx=(0, 4))
                 tk.Button(header, text="▲", bg=bg, fg=TEXT_DIM, font=("Consolas", 8),
                           bd=0, padx=4, command=lambda sid=step["id"]: self._move_step(sid, -1)).pack(side="left")
                 tk.Button(header, text="▼", bg=bg, fg=TEXT_DIM, font=("Consolas", 8),
@@ -803,10 +836,16 @@ class AutoInputApp:
         if t == "key_hold":
             return f"Hold [{a['key_display']}] for {dur}s"
         elif t == "key_press":
+            count = a.get("count")
+            if count:
+                return f"Press [{a['key_display']}] x{count} @{a['interval']}ms"
             return f"Press [{a['key_display']}] for {dur}s @{a['interval']}ms"
         elif t == "mouse_hold":
             return f"Hold mouse {a['button']} for {dur}s"
         elif t == "mouse_click":
+            count = a.get("count")
+            if count:
+                return f"Click mouse {a['button']} x{count} @{a['interval']}ms"
             return f"Click mouse {a['button']} for {dur}s @{a['interval']}ms"
         return "???"
 
@@ -908,20 +947,19 @@ class AutoInputApp:
                 self.root.after(0, lambda r=remaining: self._set_status(f"Starting in {r:.1f}s", WARNING, WARNING))
                 time.sleep(0.1)
 
-        humanize = self.humanize_var.get()
         try:
             variance_pct = float(self.variance_var.get() or 20) / 100.0
         except ValueError:
             variance_pct = 0.2
 
-        def jitter(value):
+        def jitter(value, humanize):
             """Apply random variance to a timing value if humanize is on."""
             if not humanize:
                 return value
             offset = value * variance_pct
             return max(0.001, value + random.uniform(-offset, offset))
 
-        def run_action(action):
+        def run_action(action, humanize):
             """Execute a single action (runs in its own thread for concurrency)."""
             t = action["type"]
             dur = action["duration"]
@@ -929,31 +967,48 @@ class AutoInputApp:
             if t == "key_hold":
                 key = resolve_key(action["key"])
                 kb.press(key)
-                self._interruptible_sleep(jitter(dur))
+                self._interruptible_sleep(jitter(dur, humanize))
                 kb.release(key)
 
             elif t == "key_press":
                 key = resolve_key(action["key"])
                 interval_s = action["interval"] / 1000.0
-                end_time = time.time() + jitter(dur)
-                while time.time() < end_time and not self.stop_event.is_set():
-                    kb.press(key)
-                    kb.release(key)
-                    self._interruptible_sleep(jitter(interval_s))
+                count = action.get("count")
+                if count:
+                    for _ in range(count):
+                        if self.stop_event.is_set():
+                            return
+                        kb.press(key)
+                        kb.release(key)
+                        self._interruptible_sleep(jitter(interval_s, humanize))
+                else:
+                    end_time = time.time() + jitter(dur, humanize)
+                    while time.time() < end_time and not self.stop_event.is_set():
+                        kb.press(key)
+                        kb.release(key)
+                        self._interruptible_sleep(jitter(interval_s, humanize))
 
             elif t == "mouse_hold":
                 btn = button_map[action["button"]]
                 mouse.press(btn)
-                self._interruptible_sleep(jitter(dur))
+                self._interruptible_sleep(jitter(dur, humanize))
                 mouse.release(btn)
 
             elif t == "mouse_click":
                 btn = button_map[action["button"]]
                 interval_s = action["interval"] / 1000.0
-                end_time = time.time() + jitter(dur)
-                while time.time() < end_time and not self.stop_event.is_set():
-                    mouse.click(btn)
-                    self._interruptible_sleep(jitter(interval_s))
+                count = action.get("count")
+                if count:
+                    for _ in range(count):
+                        if self.stop_event.is_set():
+                            return
+                        mouse.click(btn)
+                        self._interruptible_sleep(jitter(interval_s, humanize))
+                else:
+                    end_time = time.time() + jitter(dur, humanize)
+                    while time.time() < end_time and not self.stop_event.is_set():
+                        mouse.click(btn)
+                        self._interruptible_sleep(jitter(interval_s, humanize))
 
         loop_count = 0
         while not self.stop_event.is_set():
@@ -967,9 +1022,10 @@ class AutoInputApp:
                         self._set_status(f"[Step {idx+1}/{len(self.queue)}] Pause for {dur}s", ACCENT, ACCENT),
                         self.status_counter.configure(text=f"Loop {loop_count}")
                     ))
-                    self._interruptible_sleep(jitter(step["duration"]))
+                    self._interruptible_sleep(step["duration"])
 
                 elif step["type"] == "group":
+                    step_humanize = step.get("humanize", False)
                     descs = ", ".join(self._describe_action(a) for a in step["actions"])
                     self.root.after(0, lambda idx=i, d=descs: (
                         self._set_status(f"[Step {idx+1}/{len(self.queue)}] {d}", ACCENT, ACCENT),
@@ -977,11 +1033,11 @@ class AutoInputApp:
                     ))
 
                     if len(step["actions"]) == 1:
-                        run_action(step["actions"][0])
+                        run_action(step["actions"][0], step_humanize)
                     else:
                         threads = []
                         for action in step["actions"]:
-                            t = threading.Thread(target=run_action, args=(action,), daemon=True)
+                            t = threading.Thread(target=run_action, args=(action, step_humanize), daemon=True)
                             t.start()
                             threads.append(t)
                         for t in threads:
