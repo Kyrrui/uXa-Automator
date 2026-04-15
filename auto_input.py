@@ -62,6 +62,8 @@ class AutoInputApp:
         # Group step: {"id", "type": "group", "actions": [action, ...]}
         # Pause step: {"id", "type": "pause", "duration": float}
         self.queue = []  # list of step dicts
+        self.selected_step_id = None  # currently selected step for "Add to Step"
+        self.collapsed_steps = set()  # step IDs that are collapsed
         self.running = False
         self.worker_thread = None
         self.stop_event = threading.Event()
@@ -201,15 +203,27 @@ class AutoInputApp:
         )
         int_entry.pack()
 
-        # Add button
+        # Add buttons
+        add_btns = tk.Frame(add_inner, bg=SURFACE)
+        add_btns.pack(fill="x", pady=(4, 0))
+
         self.add_btn = tk.Button(
-            add_inner, text="＋ Add to Queue", bg=ACCENT_DIM, fg=ACCENT,
+            add_btns, text="＋ Add New Step", bg=ACCENT_DIM, fg=ACCENT,
             font=("Segoe UI Semibold", 10), bd=0, relief="flat", pady=8,
             activebackground=ACCENT, activeforeground=BG,
             highlightbackground=ACCENT, highlightthickness=1,
-            command=self._add_action,
+            command=self._add_new_step,
         )
-        self.add_btn.pack(fill="x", pady=(4, 0))
+        self.add_btn.pack(fill="x")
+
+        self.add_to_step_btn = tk.Button(
+            add_btns, text="＋ Add to Selected Step (concurrent)", bg=SURFACE2, fg=TEXT_DIM,
+            font=("Segoe UI", 9), bd=0, relief="flat", pady=6,
+            activebackground=SURFACE2, activeforeground=TEXT_DIM,
+            highlightbackground=BORDER, highlightthickness=1,
+            command=self._add_to_step, state="disabled",
+        )
+        self.add_to_step_btn.pack(fill="x", pady=(4, 0))
 
         self._on_type_change()
 
@@ -316,17 +330,21 @@ class AutoInputApp:
         ctrl_row2.pack(fill="x", pady=(0, 6))
 
         # Repeat
+        repeat_f = tk.Frame(ctrl_row2, bg=BG)
+        repeat_f.pack(side="left", padx=(0, 16))
         self.repeat_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
-            ctrl_row2, text="Loop queue", variable=self.repeat_var,
+            repeat_f, text="Loop queue", variable=self.repeat_var,
             bg=BG, fg=TEXT, selectcolor=SURFACE2,
             activebackground=BG, activeforeground=ACCENT,
             font=("Segoe UI", 10),
-        ).pack(side="left", padx=(0, 16))
+        ).pack(anchor="w")
+        tk.Label(repeat_f, text="Repeat queue when finished",
+                 bg=BG, fg=TEXT_DIM, font=("Consolas", 7)).pack(anchor="w")
 
         # Humanize
         humanize_f = tk.Frame(ctrl_row2, bg=BG)
-        humanize_f.pack(side="left", padx=(0, 8))
+        humanize_f.pack(side="left", padx=(0, 16))
         self.humanize_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
             humanize_f, text="Humanize", variable=self.humanize_var,
@@ -334,9 +352,10 @@ class AutoInputApp:
             activebackground=BG, activeforeground=ACCENT,
             font=("Segoe UI", 10),
         ).pack(anchor="w")
-        tk.Label(humanize_f, text="Adds random timing variation to look human",
+        tk.Label(humanize_f, text="Random timing to look human",
                  bg=BG, fg=TEXT_DIM, font=("Consolas", 7)).pack(anchor="w")
 
+        # Variance
         variance_f = tk.Frame(ctrl_row2, bg=BG)
         variance_f.pack(side="left", padx=(0, 16))
         tk.Label(variance_f, text="VARIANCE %", bg=BG, fg=TEXT_DIM, font=("Consolas", 8, "bold")).pack(anchor="w")
@@ -345,8 +364,8 @@ class AutoInputApp:
             variance_f, textvariable=self.variance_var, bg=SURFACE2, fg=TEXT,
             font=("Consolas", 11), bd=0, width=5,
             insertbackground=ACCENT, highlightbackground=BORDER, highlightthickness=1,
-        ).pack()
-        tk.Label(variance_f, text="e.g. 20% = timings vary +/-20%",
+        ).pack(anchor="w")
+        tk.Label(variance_f, text="Timings vary +/- this %",
                  bg=BG, fg=TEXT_DIM, font=("Consolas", 7)).pack(anchor="w")
 
         # Start / Stop
@@ -522,69 +541,130 @@ class AutoInputApp:
 
     # ── Queue management ──────────────────────────────────────────────────
 
-    def _add_action(self):
+    def _build_action(self):
+        """Build an action dict from current UI inputs. Returns None on error."""
         t = self.action_type.get()
         try:
             dur = float(self.duration_var.get() or 5)
         except ValueError:
             self._set_status("Invalid duration", DANGER, DANGER)
-            return
+            return None
         try:
             interval = int(float(self.interval_var.get() or 100))
         except ValueError:
             self._set_status("Invalid interval", DANGER, DANGER)
-            return
+            return None
 
         if t == "pause":
-            # Pause always creates a new step
-            self.queue.append({
-                "id": str(uuid.uuid4())[:8],
-                "type": "pause",
-                "duration": dur,
-            })
+            return {"id": str(uuid.uuid4())[:8], "type": t, "duration": dur}
+
+        action = {"id": str(uuid.uuid4())[:8], "type": t, "duration": dur}
+
+        if t in ("key_hold", "key_press"):
+            if not self.captured_key:
+                self.key_capture_btn.configure(text="⚠ Set a key first!", fg=DANGER)
+                return None
+            action["key"] = self.captured_key
+            action["key_display"] = self.key_capture_btn.cget("text")
+            if t == "key_press":
+                action["interval"] = interval
+        elif t in ("mouse_hold", "mouse_click"):
+            action["button"] = self.mouse_btn_var.get()
+            if t == "mouse_click":
+                action["interval"] = interval
+
+        return action
+
+    def _add_new_step(self):
+        """Always creates a new step in the queue."""
+        action = self._build_action()
+        if action is None:
+            return
+
+        if action["type"] == "pause":
+            self.queue.append(action)
         else:
-            # Build the action dict
-            action = {
+            step = {
                 "id": str(uuid.uuid4())[:8],
-                "type": t,
-                "duration": dur,
+                "type": "group",
+                "actions": [action],
             }
-
-            if t in ("key_hold", "key_press"):
-                if not self.captured_key:
-                    self.key_capture_btn.configure(text="⚠ Set a key first!", fg=DANGER)
-                    return
-                action["key"] = self.captured_key
-                action["key_display"] = self.key_capture_btn.cget("text")
-                if t == "key_press":
-                    action["interval"] = interval
-            elif t in ("mouse_hold", "mouse_click"):
-                action["button"] = self.mouse_btn_var.get()
-                if t == "mouse_click":
-                    action["interval"] = interval
-
-            # Add to existing group step, or create a new one
-            if self.queue and self.queue[-1]["type"] == "group":
-                self.queue[-1]["actions"].append(action)
-            else:
-                self.queue.append({
-                    "id": str(uuid.uuid4())[:8],
-                    "type": "group",
-                    "actions": [action],
-                })
+            self.queue.append(step)
+            self.selected_step_id = step["id"]
 
         self._render_queue()
+
+    def _add_to_step(self):
+        """Add action to the currently selected step (concurrent)."""
+        if not self.selected_step_id:
+            self._set_status("Select a step first", WARNING, WARNING)
+            return
+
+        action = self._build_action()
+        if action is None:
+            return
+
+        if action["type"] == "pause":
+            self._set_status("Can't add pause to a step — use Add New Step", WARNING, WARNING)
+            return
+
+        step = next((s for s in self.queue if s["id"] == self.selected_step_id), None)
+        if not step or step["type"] != "group":
+            self._set_status("Selected step is not a group", WARNING, WARNING)
+            return
+
+        step["actions"].append(action)
+        self._render_queue()
+
+    def _select_step(self, step_id):
+        """Select a step for concurrent action adding."""
+        step = next((s for s in self.queue if s["id"] == step_id), None)
+        if not step or step["type"] != "group":
+            return
+        if self.selected_step_id == step_id:
+            self.selected_step_id = None  # toggle off
+        else:
+            self.selected_step_id = step_id
+        self._render_queue()
+
+    def _toggle_collapse(self, step_id):
+        """Toggle collapsed state of a step."""
+        if step_id in self.collapsed_steps:
+            self.collapsed_steps.discard(step_id)
+        else:
+            self.collapsed_steps.add(step_id)
+        self._render_queue()
+
+    def _update_add_to_step_btn(self):
+        """Enable/disable the Add to Step button based on selection."""
+        if self.selected_step_id:
+            step = next((s for s in self.queue if s["id"] == self.selected_step_id), None)
+            if step and step["type"] == "group":
+                self.add_to_step_btn.configure(
+                    state="normal", fg=ACCENT, bg=ACCENT_DIM,
+                    activebackground=ACCENT, activeforeground=BG,
+                    highlightbackground=ACCENT,
+                )
+                return
+        self.add_to_step_btn.configure(
+            state="disabled", fg=TEXT_DIM, bg=SURFACE2,
+            highlightbackground=BORDER,
+        )
 
     def _remove_action(self, action_id):
         """Remove an individual action from a group, or a whole step."""
         new_queue = []
         for step in self.queue:
             if step["id"] == action_id:
-                continue  # remove entire step (pause or group)
+                if self.selected_step_id == action_id:
+                    self.selected_step_id = None
+                continue
             if step["type"] == "group":
                 step["actions"] = [a for a in step["actions"] if a["id"] != action_id]
                 if not step["actions"]:
-                    continue  # drop empty groups
+                    if self.selected_step_id == step["id"]:
+                        self.selected_step_id = None
+                    continue
             new_queue.append(step)
         self.queue = new_queue
         self._render_queue()
@@ -598,6 +678,7 @@ class AutoInputApp:
 
     def _clear_queue(self):
         self.queue = []
+        self.selected_step_id = None
         self._render_queue()
 
     def _save_queue(self):
@@ -628,6 +709,7 @@ class AutoInputApp:
             if not isinstance(data, list):
                 raise ValueError("Expected a list")
             self.queue = data
+            self.selected_step_id = None
             self._render_queue()
             self._set_status(f"Loaded {len(data)} step(s)", ACCENT, ACCENT)
         except (json.JSONDecodeError, ValueError, KeyError):
@@ -636,6 +718,13 @@ class AutoInputApp:
     def _render_queue(self):
         for w in self.queue_list_frame.winfo_children():
             w.destroy()
+
+        # Validate selection still exists
+        if self.selected_step_id:
+            if not any(s["id"] == self.selected_step_id for s in self.queue):
+                self.selected_step_id = None
+
+        self._update_add_to_step_btn()
 
         if not self.queue:
             self.empty_label = tk.Label(
@@ -646,19 +735,24 @@ class AutoInputApp:
             return
 
         for i, step in enumerate(self.queue):
-            bg = SURFACE2 if i % 2 == 0 else SURFACE
+            selected = step["id"] == self.selected_step_id
+            bg = ACCENT_DIM if selected else (SURFACE2 if i % 2 == 0 else SURFACE)
+            step_label_fg = WARNING if selected else ACCENT
+            border_color = ACCENT if selected else bg
 
             # Step header row
-            header = tk.Frame(self.queue_list_frame, bg=bg)
+            header = tk.Frame(self.queue_list_frame, bg=bg, highlightbackground=border_color,
+                              highlightthickness=1 if selected else 0)
             header.pack(fill="x", padx=6, pady=(4, 0))
 
-            tk.Label(header, text=f"Step {i+1}", bg=bg, fg=ACCENT,
-                     font=("Consolas", 9, "bold"), width=7).pack(side="left", padx=(6, 0))
+            step_label = tk.Label(header, text=f"Step {i+1}", bg=bg, fg=step_label_fg,
+                     font=("Consolas", 9, "bold"), width=7, cursor="hand2")
+            step_label.pack(side="left", padx=(6, 0))
 
             if step["type"] == "pause":
-                tk.Label(header, text=f"Pause for {step['duration']}s", bg=bg, fg=TEXT,
-                         font=("Consolas", 9), anchor="w").pack(side="left", fill="x", expand=True, padx=6, pady=4)
-                # Step controls
+                desc_label = tk.Label(header, text=f"Pause for {step['duration']}s", bg=bg, fg=TEXT,
+                         font=("Consolas", 9), anchor="w")
+                desc_label.pack(side="left", fill="x", expand=True, padx=6, pady=4)
                 tk.Button(header, text="▲", bg=bg, fg=TEXT_DIM, font=("Consolas", 8),
                           bd=0, padx=4, command=lambda sid=step["id"]: self._move_step(sid, -1)).pack(side="left")
                 tk.Button(header, text="▼", bg=bg, fg=TEXT_DIM, font=("Consolas", 8),
@@ -666,11 +760,20 @@ class AutoInputApp:
                 tk.Button(header, text="✕", bg=bg, fg=DANGER, font=("Consolas", 9, "bold"),
                           bd=0, padx=8, command=lambda sid=step["id"]: self._remove_action(sid)).pack(side="right")
             else:
-                # Group step — show step controls on header
+                # Group step — clickable to select
+                collapsed = step["id"] in self.collapsed_steps
+                chevron = "▶" if collapsed else "▼"
+                collapse_btn = tk.Button(header, text=chevron, bg=bg, fg=TEXT_DIM, font=("Consolas", 8),
+                          bd=0, padx=4, cursor="hand2",
+                          command=lambda sid=step["id"]: self._toggle_collapse(sid))
+                collapse_btn.pack(side="left")
+
                 action_count = len(step["actions"])
-                tk.Label(header, text=f"{action_count} input{'s' if action_count != 1 else ''} (concurrent)",
-                         bg=bg, fg=TEXT_DIM, font=("Consolas", 8), anchor="w"
-                         ).pack(side="left", fill="x", expand=True, padx=6, pady=4)
+                max_dur = max(a["duration"] for a in step["actions"])
+                sel_hint = " ← selected" if selected else ""
+                desc_label = tk.Label(header, text=f"{action_count} input{'s' if action_count != 1 else ''} \u00b7 {max_dur}s (concurrent){sel_hint}",
+                         bg=bg, fg=TEXT_DIM, font=("Consolas", 8), anchor="w", cursor="hand2")
+                desc_label.pack(side="left", fill="x", expand=True, padx=6, pady=4)
                 tk.Button(header, text="▲", bg=bg, fg=TEXT_DIM, font=("Consolas", 8),
                           bd=0, padx=4, command=lambda sid=step["id"]: self._move_step(sid, -1)).pack(side="left")
                 tk.Button(header, text="▼", bg=bg, fg=TEXT_DIM, font=("Consolas", 8),
@@ -678,16 +781,21 @@ class AutoInputApp:
                 tk.Button(header, text="✕", bg=bg, fg=DANGER, font=("Consolas", 9, "bold"),
                           bd=0, padx=8, command=lambda sid=step["id"]: self._remove_action(sid)).pack(side="right")
 
-                # Individual actions within the group
-                for action in step["actions"]:
-                    arow = tk.Frame(self.queue_list_frame, bg=bg)
-                    arow.pack(fill="x", padx=6)
+                # Make header clickable for selection
+                for widget in [header, step_label, desc_label]:
+                    widget.bind("<Button-1>", lambda e, sid=step["id"]: self._select_step(sid))
 
-                    tk.Label(arow, text="", bg=bg, width=7).pack(side="left", padx=(6, 0))
-                    tk.Label(arow, text=f"  {self._describe_action(action)}", bg=bg, fg=TEXT,
-                             font=("Consolas", 9), anchor="w").pack(side="left", fill="x", expand=True, padx=6, pady=2)
-                    tk.Button(arow, text="✕", bg=bg, fg=DANGER, font=("Consolas", 8),
-                              bd=0, padx=8, command=lambda aid=action["id"]: self._remove_action(aid)).pack(side="right")
+                # Individual actions (hidden when collapsed)
+                if not collapsed:
+                    for action in step["actions"]:
+                        arow = tk.Frame(self.queue_list_frame, bg=bg)
+                        arow.pack(fill="x", padx=6)
+
+                        tk.Label(arow, text="", bg=bg, width=7).pack(side="left", padx=(6, 0))
+                        tk.Label(arow, text=f"  {self._describe_action(action)}", bg=bg, fg=TEXT,
+                                 font=("Consolas", 9), anchor="w").pack(side="left", fill="x", expand=True, padx=6, pady=2)
+                        tk.Button(arow, text="✕", bg=bg, fg=DANGER, font=("Consolas", 8),
+                                  bd=0, padx=8, command=lambda aid=action["id"]: self._remove_action(aid)).pack(side="right")
 
     def _describe_action(self, a):
         t = a["type"]
